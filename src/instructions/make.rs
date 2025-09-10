@@ -48,3 +48,35 @@ impl<'a> TryFrom<&'a [AccountInfo]> for MakeAccounts<'a> {
 
     }
 }
+
+
+pub struct MakeInstructionData {
+    pub seed: u64,
+    pub receive: u64,
+    pub amount: u64,
+}
+
+impl<'a> TryFrom<&'a [u8]> for MakeInstructionData {
+    type Error = ProgramError;
+
+    fn try_from(data: &'a [u8]) -> Result<Self, Self::Error> {
+        if data.len() != size_of::<u64>() * 3 {
+            return Err(ProgramError::InvalidAccountData);
+        }
+
+        let seed = u64::from_le_bytes(data[0..8].try_into().unwrap());
+        let receive = u64::from_le_bytes(data[8..16].try_into().unwrap());
+        let amount = u64::from_le_bytes(data[16..32].try_into().unwrap());
+
+        // Instruction Checks
+        if amount == 0 {
+            return Err(ProgramError::InvalidAccountData);
+        }
+
+        Ok(Self {
+            seed,
+            receive,
+            amount,
+        })
+    }
+}
