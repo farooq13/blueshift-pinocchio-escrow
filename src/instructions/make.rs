@@ -1,12 +1,8 @@
 use pinocchio::{
-    account_info::AccountInfo,
-    program_error::ProgramError,
-    SignerAccount,
-    MintInterface,
-    AssociatedTokenAccount,
+    account_info::AccountInfo, instruction::Seed, program_error::ProgramError, pubkey::find_program_address, AssociatedTokenAccount, MintInterface, ProgramResult, SignerAccount, Transfer
 };
 
-
+use crate::Escrow;
 
 
 pub struct MakeAccounts<'a> {
@@ -78,5 +74,84 @@ impl<'a> TryFrom<&'a [u8]> for MakeInstructionData {
             receive,
             amount,
         })
+    }
+}
+
+pub struct Make<'a> {
+    pub accounts: MakeAccounts<'a>,
+    pub instruction_data: MakeInstructionData,
+    pub bump: u8,
+}
+
+impl<'a> TryFrom<(&'a [u8], &'a [AccountInfo])> for Make<'a> {
+    type Error = ProgramError;
+
+    fn try_from((data, accounts): (&'a [u8], &'a [AccountInfo])) -> Result<Self, Self::Error> {
+        let accounts = MakeAccounts::try_from(accounts)?;
+        let instruction_data = MakeInstructionData::try_from(data)?;
+
+        // Initialize the Accounts needed
+        let (_, bump) = find_program_address(&[b"escrow", accounts.maker.key(), &instruction_data.seed.to_le_bytes()], &create::ID);
+
+        let seed_binding = instruction_data.seed.to_le_bytes();
+        let bump_binding = [bump];
+        let escrow_seeds = [
+            Seed::from(b"escrow"),
+            Seed::from(accounts.maker.key().as_ref()),
+            Seed::from(&seed_binding),
+            Seed::from(&bump_binding),
+        ];
+
+        ProgramAccount::init::<Escrow>(
+            accounts.maker,
+            accounts.escrow,
+            &escrow_seeds,
+            Escrow::LEN
+        )?;
+
+        // Initialize the vault
+        AssociatedTokenAccount::init(
+            accounts.vault,
+            accounts.mint_a,
+            accounts.maker,
+            accounts.escrow,
+            accounts.system_program,
+            accounts.token_program,
+        )?;
+
+        Ok(Self {
+            accounts,
+            instruction_data,
+            bump,
+        })
+    }
+}
+
+impl<'a> Make<'a> {
+    pub const DISCRIMINATOR: &'a u8 = &0;
+
+    pub fn process(&mut self) -> ProgramResult {
+        // Populte the escrow account
+        let mut data = self.accounts.escrow.try_borrow_mut_data()?;
+        let escrow = Escrow::load_mut(data.as_mut())?;
+
+        escrow.set_inner(
+            self.instruction_data.seed,
+            *self.accounts.maker.key(),
+            *self.accounts.mint_a.key(),
+            *self.accounts.mint_b.key(),
+            self.instruction_data.receive,
+            [self.bump],
+        );
+
+        // Transfer tokens to vault
+        Transfer {
+            from: self.accounts.maker_ata_a,
+            to: self.accounts.vault,
+            authority: self.accounts.maker,
+            amount: self.instruction_data.amount
+        }.invoke()?;
+
+        Ok(())
     }
 }
